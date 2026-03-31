@@ -84,10 +84,6 @@ def load_data_from_gsheet(url, worksheet_name):
         return None
 
 def sync_to_google_sheet(df, url, worksheet_name):
-    """Push data to specific worksheet"""
-    if not GSPREAD_AVAILABLE:
-        return False, "gspread not available"
-
     try:
         secret = st.secrets["gcp_service_account"]
         creds_dict = json.loads(secret) if isinstance(secret, str) else dict(secret)
@@ -137,27 +133,6 @@ def process_scan(tracking_id, df_key):
     else:
         st.session_state['scanned_status'] = 'error'
         st.session_state['scanned_message'] = f"❌ Not found"
-
-def display_aggrid(df, title):
-    st.subheader(title)
-    cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
-    display_cols = [c for c in cols if c in df.columns]
-    gb = GridOptionsBuilder.from_dataframe(df[display_cols])
-    gb.configure_pagination(paginationPageSize=50)
-    gb.configure_default_column(filterable=True, sortable=True)
-    AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
-
-def to_excel(df):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    return output.getvalue()
-
-def get_bulk_template_csv():
-    return pd.DataFrame(columns=['Tracking ID']).to_csv(index=False).encode('utf-8')
-
-def get_missing_ids_csv(missing_ids):
-    return pd.DataFrame({'Missing Tracking ID': missing_ids}).to_csv(index=False).encode('utf-8')
 
 def process_bulk_upload(bulk_file):
     df_c = st.session_state.get('returns_df_courier')
@@ -225,6 +200,27 @@ def process_bulk_upload(bulk_file):
     except Exception as e:
         st.error(f"Error: {e}")
 
+def display_aggrid(df, title):
+    st.subheader(title)
+    cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
+    display_cols = [c for c in cols if c in df.columns]
+    gb = GridOptionsBuilder.from_dataframe(df[display_cols])
+    gb.configure_pagination(paginationPageSize=50)
+    gb.configure_default_column(filterable=True, sortable=True)
+    AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
+
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
+
+def get_bulk_template_csv():
+    return pd.DataFrame(columns=['Tracking ID']).to_csv(index=False).encode('utf-8')
+
+def get_missing_ids_csv(missing_ids):
+    return pd.DataFrame({'Missing Tracking ID': missing_ids}).to_csv(index=False).encode('utf-8')
+
 # -----------------------------------------------------------------------------
 # Sidebar
 # -----------------------------------------------------------------------------
@@ -245,27 +241,23 @@ with st.sidebar:
             if df_r is not None:
                 st.session_state['returns_df_reverse'] = df_r
 
-        if df_c is not None or df_r is not None:
-            st.success("✅ Both sheets loaded!")
-        else:
-            st.error("Failed to load sheets")
+        st.success("✅ Both sheets loaded!")
 
     if st.session_state.get('returns_df_courier') is not None or st.session_state.get('returns_df_reverse') is not None:
         st.divider()
         if st.button("🚀 Push All Changes", type="primary"):
-            with st.spinner("Pushing changes..."):
-                msg_list = []
+            with st.spinner("Pushing..."):
+                pushed = []
                 if st.session_state.get('returns_df_courier') is not None:
                     success, msg = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
                     if success:
-                        msg_list.append("Courier Return")
+                        pushed.append("Courier Return")
                 if st.session_state.get('returns_df_reverse') is not None:
                     success, msg = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
                     if success:
-                        msg_list.append("Reverse Pickup")
-                
-                if msg_list:
-                    st.success(f"✅ Pushed to: {', '.join(msg_list)}")
+                        pushed.append("Reverse Pickup")
+                if pushed:
+                    st.success(f"✅ Pushed to: {', '.join(pushed)}")
                 else:
                     st.error("Push failed")
 
@@ -283,7 +275,7 @@ df_c = st.session_state.get('returns_df_courier')
 df_r = st.session_state.get('returns_df_reverse')
 
 if df_c is None and df_r is None:
-    st.info("Click **Load Both Sheets** from sidebar to begin.")
+    st.info("Click **Load Both Sheets** from sidebar")
 else:
     total = (len(df_c) if df_c is not None else 0) + (len(df_r) if df_r is not None else 0)
     received = 0
