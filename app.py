@@ -116,48 +116,23 @@ def process_scan(tracking_id):
     mask = df['Tracking ID'] == clean_id
     if mask.any():
         idx = mask.idxmax()
-
         if df.loc[idx, 'Received'] == "Received":
             st.session_state['scanned_status'] = 'warning'
             st.session_state['scanned_message'] = f"⚠️ Already marked: {tracking_id}"
         else:
             current_time = get_current_ist_time()
-            
-            # Strong Timestamp Fix
-            df = df.copy()  # Important
+            df = df.copy()
             df.loc[idx, 'Received'] = "Received"
             df.loc[idx, 'Received Timestamp'] = current_time
-            
             st.session_state['returns_df'] = df
 
-            sku = df.loc[idx].get('Item SkuCode', df.loc[idx].get('SKU', 'N/A'))
-            qty = df.loc[idx].get('Total Received Items', df.loc[idx].get('Quantity', 'N/A'))
-
+            sku = df.loc[idx].get('Item SkuCode', 'N/A')
+            qty = df.loc[idx].get('Total Received Items', 'N/A')
             st.session_state['scanned_status'] = 'success'
             st.session_state['scanned_message'] = f"✅ Marked: {tracking_id} | SKU: {sku} | Qty: {qty}"
     else:
         st.session_state['scanned_status'] = 'error'
         st.session_state['scanned_message'] = f"❌ Not found"
-
-def display_aggrid(df):
-    cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
-    display_cols = [c for c in cols if c in df.columns]
-    gb = GridOptionsBuilder.from_dataframe(df[display_cols])
-    gb.configure_pagination(paginationPageSize=50)
-    gb.configure_default_column(filterable=True, sortable=True)
-    AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
-
-def to_excel(df):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    return output.getvalue()
-
-def get_bulk_template_csv():
-    return pd.DataFrame(columns=['Tracking ID']).to_csv(index=False).encode('utf-8')
-
-def get_missing_ids_csv(missing_ids):
-    return pd.DataFrame({'Missing Tracking ID': missing_ids}).to_csv(index=False).encode('utf-8')
 
 def process_bulk_upload(bulk_file):
     df = st.session_state.get('returns_df')
@@ -183,7 +158,7 @@ def process_bulk_upload(bulk_file):
         missing_ids = list(bulk_ids - set(df['Tracking ID'].astype(str)))
 
         current_time = get_current_ist_time()
-        df = df.copy()
+        df = df.copy()   # Important for timestamp
         df.loc[matches & (df['Received'] == "Not Received"), 'Received'] = "Received"
         df.loc[matches & (df['Received'] == "Not Received"), 'Received Timestamp'] = current_time
 
@@ -200,6 +175,26 @@ def process_bulk_upload(bulk_file):
 
     except Exception as e:
         st.error(f"Error: {e}")
+
+def display_aggrid(df):
+    cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
+    display_cols = [c for c in cols if c in df.columns]
+    gb = GridOptionsBuilder.from_dataframe(df[display_cols])
+    gb.configure_pagination(paginationPageSize=50)
+    gb.configure_default_column(filterable=True, sortable=True)
+    AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
+
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
+
+def get_bulk_template_csv():
+    return pd.DataFrame(columns=['Tracking ID']).to_csv(index=False).encode('utf-8')
+
+def get_missing_ids_csv(missing_ids):
+    return pd.DataFrame({'Missing Tracking ID': missing_ids}).to_csv(index=False).encode('utf-8')
 
 # -----------------------------------------------------------------------------
 # Sidebar
