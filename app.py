@@ -55,6 +55,7 @@ def load_data_from_gsheet(url, worksheet_name):
 
         df.columns = [str(col).strip() for col in df.columns]
 
+        # Tracking Column
         possible = ["Tracking No", "AWB No", "Tracking ID", "AWB"]
         found = next((col for col in df.columns if any(p.lower() in col.lower() for p in possible)), None)
         if found and found != "Tracking ID":
@@ -159,27 +160,34 @@ def process_bulk_upload(bulk_file):
 
         current_time = get_current_ist_time()
 
-        # Process Courier & Reverse
+        # === COURIER RETURN ===
         if df_c is not None:
             df_c = df_c.copy()
             mask_c = df_c['Tracking ID'].isin(bulk_ids)
-            newly_c = (mask_c & (df_c['Received'] == "Not Received")).sum()
-            df_c.loc[mask_c & (df_c['Received'] == "Not Received"), 'Received'] = "Received"
-            df_c.loc[mask_c & (df_c['Received'] == "Not Received"), 'Received Timestamp'] = current_time
+            update_mask_c = mask_c & (df_c['Received'] == "Not Received")
+            newly_c = update_mask_c.sum()
+            if newly_c > 0:
+                df_c.loc[update_mask_c, 'Received'] = "Received"
+                df_c.loc[update_mask_c, 'Received Timestamp'] = current_time
             st.session_state['returns_df_courier'] = df_c
 
+        # === REVERSE PICKUP ===
         if df_r is not None:
             df_r = df_r.copy()
             mask_r = df_r['Tracking ID'].isin(bulk_ids)
-            newly_r = (mask_r & (df_r['Received'] == "Not Received")).sum()
-            df_r.loc[mask_r & (df_r['Received'] == "Not Received"), 'Received'] = "Received"
-            df_r.loc[mask_r & (df_r['Received'] == "Not Received"), 'Received Timestamp'] = current_time
+            update_mask_r = mask_r & (df_r['Received'] == "Not Received")
+            newly_r = update_mask_r.sum()
+            if newly_r > 0:
+                df_r.loc[update_mask_r, 'Received'] = "Received"
+                df_r.loc[update_mask_r, 'Received Timestamp'] = current_time
             st.session_state['returns_df_reverse'] = df_r
 
-        # Not Found
+        # === NOT FOUND ===
         all_ids = set()
-        if df_c is not None: all_ids.update(df_c['Tracking ID'].astype(str))
-        if df_r is not None: all_ids.update(df_r['Tracking ID'].astype(str))
+        if df_c is not None:
+            all_ids.update(df_c['Tracking ID'].astype(str))
+        if df_r is not None:
+            all_ids.update(df_r['Tracking ID'].astype(str))
 
         missing = list(bulk_ids - all_ids)
 
