@@ -23,8 +23,8 @@ st.set_page_config(page_title="Amazon Returns Scanner", page_icon="📦", layout
 st.markdown("<style>.big-font {font-size: 24px !important; font-weight: bold;}</style>", unsafe_allow_html=True)
 
 # Session State
-for key in ['returns_df_courier', 'returns_df_reverse', 'scanned_message', 'scanned_status', 
-            'bulk_message', 'bulk_status', 'missing_bulk_ids']:
+for key in ['returns_df_courier', 'returns_df_reverse', 'not_found_df', 'scanned_message', 
+            'scanned_status', 'bulk_message', 'bulk_status', 'missing_bulk_ids']:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -178,7 +178,7 @@ def process_bulk_upload(bulk_file):
             df_r.loc[mask_r & (df_r['Received'] == "Not Received"), 'Received Timestamp'] = current_time
             st.session_state['returns_df_reverse'] = df_r
 
-        # Missing IDs
+        # Missing IDs with Timestamp
         all_ids = set()
         if df_c is not None:
             all_ids.update(df_c['Tracking ID'].astype(str))
@@ -186,6 +186,17 @@ def process_bulk_upload(bulk_file):
             all_ids.update(df_r['Tracking ID'].astype(str))
 
         missing = list(bulk_ids - all_ids)
+        
+        # Create Not Found DataFrame with Timestamp
+        if missing:
+            not_found_df = pd.DataFrame({
+                'Tracking ID': missing,
+                'Status': 'Not Found',
+                'Processed Time': current_time
+            })
+            st.session_state['not_found_df'] = not_found_df
+        else:
+            st.session_state['not_found_df'] = None
 
         st.session_state['missing_bulk_ids'] = missing
         st.session_state['bulk_status'] = 'success'
@@ -249,11 +260,11 @@ with st.sidebar:
             with st.spinner("Pushing..."):
                 pushed = []
                 if st.session_state.get('returns_df_courier') is not None:
-                    success, msg = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
+                    success, _ = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
                     if success:
                         pushed.append("Courier Return")
                 if st.session_state.get('returns_df_reverse') is not None:
-                    success, msg = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
+                    success, _ = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
                     if success:
                         pushed.append("Reverse Pickup")
                 if pushed:
@@ -273,6 +284,7 @@ st.title("📦 Amazon Returns Scanner")
 
 df_c = st.session_state.get('returns_df_courier')
 df_r = st.session_state.get('returns_df_reverse')
+not_found_df = st.session_state.get('not_found_df')
 
 if df_c is None and df_r is None:
     st.info("Click **Load Both Sheets** from sidebar")
@@ -289,7 +301,7 @@ else:
     c2.metric("✅ Received", received)
     c3.metric("⏳ Pending", total - received)
 
-    tab1, tab2 = st.tabs(["🎯 Single Scan", "📁 Bulk Upload"])
+    tab1, tab2, tab3 = st.tabs(["🎯 Single Scan", "📁 Bulk Upload", "❌ Not Found"])
 
     with tab1:
         st.markdown('<p class="big-font">Scan AWB No / Tracking No</p>', unsafe_allow_html=True)
@@ -335,3 +347,14 @@ else:
                                      file_name="missing_ids.csv", mime="text/csv")
             else:
                 st.error(bulk_msg)
+
+    with tab3:
+        st.markdown("### ❌ Not Found IDs")
+        if not_found_df is not None and not not_found_df.empty:
+            st.dataframe(not_found_df)
+            st.download_button("⬇️ Download Not Found List", 
+                             data=to_excel(not_found_df),
+                             file_name="not_found_ids.xlsx",
+                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.info("No missing IDs yet. Process bulk upload first.")
