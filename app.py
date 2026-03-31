@@ -7,7 +7,7 @@ from datetime import datetime
 import pytz
 from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, JsCode
 
-# Google API
+# Google API libraries
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -16,7 +16,7 @@ except ImportError:
     GSPREAD_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
-# Configuration
+# Configuration & Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Amazon Returns Scanner",
@@ -31,7 +31,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# -----------------------------------------------------------------------------
 # Session State
+# -----------------------------------------------------------------------------
 for key in ['returns_df', 'scanned_message', 'scanned_status', 'bulk_message', 'bulk_status', 'missing_bulk_ids']:
     if key not in st.session_state:
         st.session_state[key] = None
@@ -70,7 +72,9 @@ def load_data_from_gsheet(url, worksheet_name):
             worksheet = spreadsheet.worksheet(worksheet_name)
             data = worksheet.get_all_records()
             df = pd.DataFrame(data)
+            st.sidebar.success(f"✅ Loaded **{worksheet_name}** using gspread")
         else:
+            st.sidebar.warning("⚠️ Using CSV fallback")
             csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
             df = pd.read_csv(csv_url)
 
@@ -95,7 +99,7 @@ def load_data_from_gsheet(url, worksheet_name):
             st.sidebar.error(f"❌ Tracking column not found in **{worksheet_name}**")
             return None
 
-        # === FIXED TRACKING ID CLEANING ===
+        # Clean Tracking ID (Scientific notation + .0 fix)
         df['Tracking ID'] = (
             df['Tracking ID']
             .astype(str)
@@ -104,7 +108,7 @@ def load_data_from_gsheet(url, worksheet_name):
             .str.replace(r'[^0-9]', '', regex=True)
         )
 
-        # Received & Timestamp Setup
+        # Received & Timestamp
         if 'Received' not in df.columns:
             df['Received'] = "Not Received"
         else:
@@ -114,8 +118,6 @@ def load_data_from_gsheet(url, worksheet_name):
 
         if 'Received Timestamp' not in df.columns:
             df['Received Timestamp'] = ""
-
-        df['Tracking ID'] = df['Tracking ID'].astype(str).str.strip()
 
         # Rearrange columns
         all_cols = [c for c in df.columns if c not in ['Received', 'Received Timestamp']]
@@ -155,11 +157,10 @@ def sync_to_google_sheet(df, url, worksheet_name):
         worksheet.clear()
         worksheet.update(range_name="A1", values=data)
 
-        return True, f"✅ Data pushed to **{worksheet_name}** successfully!"
+        return True, f"✅ Data pushed successfully to **{worksheet_name}**!"
     except Exception as e:
         return False, f"Push Error: {str(e)}"
 
-# ====================== FIXED PROCESS_SCAN ======================
 def process_scan(tracking_id):
     df = st.session_state.get('returns_df')
     if df is None:
@@ -172,19 +173,17 @@ def process_scan(tracking_id):
 
     mask = df['Tracking ID'] == clean_id
     if mask.any():
-        idx = mask.idxmax()   # Get actual index
+        idx = mask.idxmax()
 
         if df.loc[idx, 'Received'] == "Received":
             st.session_state['scanned_status'] = 'warning'
             st.session_state['scanned_message'] = f"⚠️ Already marked: {tracking_id}"
         else:
             current_time = get_current_ist_time()
-            
-            # Strong assignment for both columns
             df.loc[idx, 'Received'] = "Received"
             df.loc[idx, 'Received Timestamp'] = current_time
             
-            st.session_state['returns_df'] = df.copy()   # Important: Use .copy()
+            st.session_state['returns_df'] = df.copy()
             
             sku = df.loc[idx].get('SKU', df.loc[idx].get('Item SkuCode', 'N/A'))
             qty = df.loc[idx].get('Quantity', df.loc[idx].get('Total Received Items', 'N/A'))
@@ -194,8 +193,6 @@ def process_scan(tracking_id):
     else:
         st.session_state['scanned_status'] = 'error'
         st.session_state['scanned_message'] = f"❌ '{tracking_id}' not found!"
-
-# Baaki functions same rakh sakte ho (display_aggrid, to_excel, bulk etc.)
 
 def display_aggrid(df):
     default_cols = ['Sale Order No', 'Shipping Package Code', 'Tracking ID', 'Item SkuCode', 
@@ -220,17 +217,74 @@ def display_aggrid(df):
     AgGrid(filtered, gridOptions=grid_options, allow_unsafe_jscode=True,
            columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS, theme='streamlit')
 
-# ... (to_excel, get_bulk_template_csv, get_missing_ids_csv, process_bulk_upload same as previous version)
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Updated Returns')
+    return output.getvalue()
 
-# Sidebar and Main Page same as last code (space saving ke liye yahan short kiya)
+def get_bulk_template_csv():
+    return pd.DataFrame(columns=['Tracking ID']).to_csv(index=False).encode('utf-8')
 
-# ================== Sidebar (with Push) ==================
+def get_missing_ids_csv(missing_ids_list):
+    return pd.DataFrame({'Tracking ID Not Found': missing_ids_list}).to_csv(index=False).encode('utf-8')
+
+def process_bulk_upload(bulk_file):
+    df = st.session_state.get('returns_df')
+    if df is None:
+        st.session_state['bulk_status'] = 'error'
+        st.session_state['bulk_message'] = "Please load the sheet first!"
+        return
+
+    try:
+        if bulk_file.name.endswith('.csv'):
+            bulk_df = pd.read_csv(bulk_file)
+        else:
+            bulk_df = pd.read_excel(bulk_file)
+            
+        if 'Tracking ID' not in bulk_df.columns:
+            st.session_state['bulk_status'] = 'error'
+            st.session_state['bulk_message'] = "❌ 'Tracking ID' column not found."
+            return
+            
+        bulk_ids = set(bulk_df['Tracking ID'].dropna().astype(str).str.strip().str.lower().tolist())
+        main_ids = set(df['Tracking ID'].astype(str).tolist())
+        
+        missing_ids = list(bulk_ids - main_ids)
+        st.session_state['missing_bulk_ids'] = missing_ids
+        
+        matches_mask = df['Tracking ID'].isin(bulk_ids)
+        already = df[matches_mask & (df['Received'] == "Received")].shape[0]
+        newly = df[matches_mask & (df['Received'] == "Not Received")].shape[0]
+        
+        current_time = get_current_ist_time()
+        df.loc[matches_mask & (df['Received'] == "Not Received"), 'Received'] = "Received"
+        df.loc[matches_mask & (df['Received'] == "Not Received"), 'Received Timestamp'] = current_time
+        st.session_state['returns_df'] = df
+        
+        st.session_state['bulk_status'] = 'success'
+        st.session_state['bulk_message'] = f"✅ Bulk Update Done!\n\n🎯 Newly Marked: **{newly}**\n⚠️ Already Marked: **{already}**\n❌ Not Found: **{len(missing_ids)}**"
+        
+    except Exception as e:
+        st.session_state['bulk_status'] = 'error'
+        st.session_state['bulk_message'] = f"Error: {e}"
+
+# -----------------------------------------------------------------------------
+# Sidebar
+# -----------------------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ Operations")
     
-    sheet_name = st.selectbox("📑 Sheet/Tab Name:", ["Courier Return", "Reverse Pickup"], index=0)
+    sheet_name = st.selectbox(
+        "📑 Sheet/Tab Name:",
+        options=["Courier Return", "Reverse Pickup"],
+        index=0
+    )
     
-    gsheet_url = st.text_input("Google Sheet Link:", value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing")
+    gsheet_url = st.text_input(
+        "Google Sheet Link:", 
+        value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing"
+    )
     
     if st.button("🔄 Load Data", type="primary"):
         if gsheet_url:
@@ -238,50 +292,76 @@ with st.sidebar:
                 loaded_df = load_data_from_gsheet(gsheet_url, sheet_name)
                 if loaded_df is not None:
                     st.session_state['returns_df'] = loaded_df
-                    st.success(f"✅ **{sheet_name}** loaded!")
+                    st.success(f"✅ **{sheet_name}** loaded successfully!")
                     st.rerun()
+        else:
+            st.warning("Please enter Google Sheet link.")
 
-    if st.session_state.get('returns_df') is not None:
+    current_df = st.session_state.get('returns_df')
+    
+    if current_df is not None:
         st.divider()
         st.markdown("### ☁️ Sync to Google Sheet")
+        
         if st.button("🚀 Push to Google Sheet", type="primary", use_container_width=True):
-            with st.spinner("Pushing..."):
-                success, msg = sync_to_google_sheet(st.session_state['returns_df'], gsheet_url, sheet_name)
+            with st.spinner("Pushing data..."):
+                success, msg = sync_to_google_sheet(current_df, gsheet_url, sheet_name)
                 if success:
                     st.success(msg)
                 else:
                     st.error(msg)
 
-        excel_data = to_excel(st.session_state['returns_df'])
-        st.download_button("📊 Download Updated Excel", data=excel_data, 
-                          file_name=f"returns_{sheet_name.lower().replace(' ','_')}.xlsx",
-                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                          use_container_width=True)
+        st.markdown("### 💾 Local Backup")
+        excel_data = to_excel(current_df)
+        st.download_button(
+            label="📊 Download Updated Excel",
+            data=excel_data,
+            file_name=f"amazon_returns_{sheet_name.lower().replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+        st.divider()
+        if st.button("🗑️ Clear All Received Marks", use_container_width=True):
+            current_df['Received'] = "Not Received"
+            current_df['Received Timestamp'] = ""
+            st.session_state['returns_df'] = current_df
+            st.rerun()
 
-# Main Page (Scan + Bulk) - same as before
+# -----------------------------------------------------------------------------
+# Main Page
+# -----------------------------------------------------------------------------
 st.title("📦 Amazon Returns Scanner")
 
-if st.session_state.get('returns_df') is None:
-    st.info("Load data from sidebar.")
+main_df = st.session_state.get('returns_df')
+
+if main_df is None:
+    st.info("👈 Sidebar mein Sheet/Tab Name select karke **Load Data** dabao.")
 else:
-    df = st.session_state['returns_df']
-    total = len(df)
-    received = (df['Received'] == "Received").sum()
+    total = len(main_df)
+    received = (main_df['Received'] == "Received").sum()
+    pending = total - received
+    
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total", total)
-    col2.metric("Received", received)
-    col3.metric("Pending", total-received)
+    col1.metric("Total Returns", total)
+    col2.metric("✅ Received", received)
+    col3.metric("⏳ Pending", pending)
+    
+    st.divider()
 
     tab_scan, tab_bulk = st.tabs(["🎯 Single Scan", "📁 Bulk Upload"])
     
     with tab_scan:
         st.markdown('<p class="big-font">Scan AWB No / Tracking No</p>', unsafe_allow_html=True)
+        
         with st.form("scan_form", clear_on_submit=True):
             col_input, col_btn = st.columns([4, 1])
             with col_input:
-                manual_id = st.text_input("AWB No / Tracking No", label_visibility="collapsed", placeholder="Scan ya type karo...")
+                manual_id = st.text_input("AWB No / Tracking No", label_visibility="collapsed", 
+                                        placeholder="Scan ya type karo...")
             with col_btn:
                 submitted = st.form_submit_button("Mark as Received", use_container_width=True)
+            
             if submitted and manual_id:
                 process_scan(manual_id)
 
@@ -295,18 +375,28 @@ else:
                 st.error(msg)
 
         st.markdown("### 📊 Data Overview")
-        display_aggrid(df)
+        display_aggrid(main_df)
 
     with tab_bulk:
-        st.download_button("⬇️ Download Template", data=get_bulk_template_csv(), file_name="bulk_template.csv", mime="text/csv")
-        bulk_file = st.file_uploader("Upload Filled Template", type=['csv', 'xlsx'])
+        st.markdown("### 📥 Bulk Upload")
+        st.download_button("⬇️ Download Template", data=get_bulk_template_csv(), 
+                          file_name="bulk_template.csv", mime="text/csv")
+        
+        bulk_file = st.file_uploader("Upload Filled Template (.csv / .xlsx)", type=['csv', 'xlsx'])
+        
         if st.button("🚀 Process Bulk Upload", type="primary"):
             if bulk_file:
                 process_bulk_upload(bulk_file)
             else:
-                st.warning("Upload file first.")
-        if st.session_state.get('bulk_message'):
+                st.warning("File upload karo pehle.")
+                
+        bulk_msg = st.session_state.get('bulk_message')
+        if bulk_msg:
             if st.session_state.get('bulk_status') == 'success':
-                st.success(st.session_state['bulk_message'])
+                st.success(bulk_msg)
+                if st.session_state.get('missing_bulk_ids'):
+                    st.download_button("⬇️ Download Missing IDs", 
+                                     data=get_missing_ids_csv(st.session_state['missing_bulk_ids']),
+                                     file_name="missing_ids.csv", mime="text/csv")
             else:
-                st.error(st.session_state['bulk_message'])
+                st.error(bulk_msg)
