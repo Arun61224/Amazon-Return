@@ -84,6 +84,10 @@ def load_data_from_gsheet(url, worksheet_name):
         return None
 
 def sync_to_google_sheet(df, url, worksheet_name):
+    """Fixed: Returns only success and message"""
+    if not GSPREAD_AVAILABLE:
+        return False, "gspread not available"
+
     try:
         secret = st.secrets["gcp_service_account"]
         creds_dict = json.loads(secret) if isinstance(secret, str) else dict(secret)
@@ -102,9 +106,9 @@ def sync_to_google_sheet(df, url, worksheet_name):
 
         worksheet.clear()
         worksheet.update("A1", data)
-        return True
+        return True, f"✅ Pushed to **{worksheet_name}**"
     except Exception as e:
-        return False
+        return False, f"Push failed: {e}"
 
 def process_scan(tracking_id, df_key):
     df = st.session_state.get(df_key)
@@ -259,20 +263,21 @@ with st.sidebar:
     if st.session_state.get('returns_df_courier') is not None or st.session_state.get('returns_df_reverse') is not None:
         st.divider()
         if st.button("🚀 Push All Changes", type="primary"):
-            with st.spinner("Pushing..."):
+            with st.spinner("Pushing changes..."):
                 pushed = []
                 if st.session_state.get('returns_df_courier') is not None:
-                    success, _ = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
+                    success, msg = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
                     if success:
                         pushed.append("Courier Return")
                 if st.session_state.get('returns_df_reverse') is not None:
-                    success, _ = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
+                    success, msg = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
                     if success:
                         pushed.append("Reverse Pickup")
+                
                 if pushed:
-                    st.success(f"✅ Pushed to: {', '.join(pushed)}")
+                    st.success(f"✅ Successfully pushed to: {', '.join(pushed)}")
                 else:
-                    st.error("Push failed")
+                    st.error("Push failed for some sheets")
 
         st.download_button("📊 Download All Excel", 
                           data=to_excel(pd.concat([st.session_state.get('returns_df_courier', pd.DataFrame()), 
