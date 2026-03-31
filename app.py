@@ -9,8 +9,8 @@ from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, JsCode
 
 # Google API libraries
 try:
+    from streamlit_gsheets import GSheetsConnection
     import gspread
-    from google.oauth2.service_account import Credentials
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
@@ -54,31 +54,20 @@ def load_data_from_gsheet(url, worksheet_name):
         
         sheet_id = match.group(1)
 
-        # Try loading specific worksheet using gspread
-        if GSPREAD_AVAILABLE and "gcp_service_account" in st.secrets:
+        # Load specific worksheet using new Streamlit Connection
+        if GSPREAD_AVAILABLE:
             try:
-                secret_data = st.secrets["gcp_service_account"]
-                if isinstance(secret_data, str):
-                    creds_dict = json.loads(secret_data)
-                else:
-                    creds_dict = dict(secret_data)
-                
-                # Private key fix
-                if "private_key" in creds_dict:
-                    pk = creds_dict["private_key"].replace("\\n", "\n")
-                    creds_dict["private_key"] = pk
-                
-                scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-                creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-                client = gspread.authorize(creds)
+                # Direct Streamlit secrets connection
+                conn = st.connection("gsheets", type=GSheetsConnection)
+                client = conn.client # Get underlying gspread client
                 
                 spreadsheet = client.open_by_key(sheet_id)
                 worksheet = spreadsheet.worksheet(worksheet_name)
                 data = worksheet.get_all_records()
                 df = pd.DataFrame(data)
-                st.sidebar.success(f"Loaded using gspread → {worksheet_name}")
+                st.sidebar.success(f"✅ Loaded Securely → {worksheet_name}")
             except Exception as e:
-                st.sidebar.warning(f"gspread failed: {e}. Using CSV fallback.")
+                st.sidebar.warning(f"Connection failed: {e}. Using CSV fallback.")
                 csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
                 df = pd.read_csv(csv_url)
         else:
@@ -135,26 +124,12 @@ def load_data_from_gsheet(url, worksheet_name):
 def sync_to_google_sheet(df, url, worksheet_name):
     """Push updated dataframe to specific worksheet"""
     if not GSPREAD_AVAILABLE:
-        return False, "gspread library not installed. Add 'gspread' and 'google-auth' to requirements.txt"
+        return False, "streamlit-gsheets-connection library not installed."
     
     try:
-        if "gcp_service_account" not in st.secrets:
-            return False, "❌ Service Account not found in Streamlit Secrets"
-
-        secret_data = st.secrets["gcp_service_account"]
-        if isinstance(secret_data, str):
-            creds_dict = json.loads(secret_data)
-        else:
-            creds_dict = dict(secret_data)
-
-        # Private key fix
-        if "private_key" in creds_dict:
-            pk = creds_dict["private_key"].replace("\\n", "\n")
-            creds_dict["private_key"] = pk
-
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(creds)
+        # Use simple Streamlit connection
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        client = conn.client
 
         match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
         if not match:
@@ -313,7 +288,6 @@ with st.sidebar:
                 loaded_df = load_data_from_gsheet(gsheet_url, sheet_name)
                 if loaded_df is not None:
                     st.session_state['returns_df'] = loaded_df
-                    st.success(f"✅ **{sheet_name}** loaded successfully!")
                     st.rerun()
         else:
             st.warning("Please enter Google Sheet link.")
