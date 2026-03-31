@@ -36,7 +36,7 @@ def get_current_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist).strftime('%Y-%m-%d %I:%M:%S %p')
 
-def load_data_from_gsheet(url, return_source, worksheet_name):
+def load_data_from_gsheet(url, worksheet_name):
     try:
         match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
         if not match:
@@ -49,21 +49,21 @@ def load_data_from_gsheet(url, return_source, worksheet_name):
         df = pd.read_csv(csv_url)
         df.columns = df.columns.str.strip()
 
-        # Tracking Column Mapping (Only Amazon)
-        tracking_map = {
-            "Amazon - Courier Return": "AWB No",
-            "Amazon - Reverse Pickup": "Tracking No"
-        }
-        
-        expected_col = tracking_map.get(return_source)
-        
+        # Column Mapping based on Sheet Name
+        if worksheet_name == "Courier Return":
+            tracking_col = "AWB No"
+        elif worksheet_name == "Reverse Pickup":
+            tracking_col = "Tracking No"
+        else:
+            tracking_col = "Tracking ID"
+
         if "Tracking ID" in df.columns:
             pass  # Already standardized
-        elif expected_col in df.columns:
-            df = df.rename(columns={expected_col: "Tracking ID"})
-            st.sidebar.success(f"✅ '{expected_col}' ko 'Tracking ID' mein rename kar diya")
+        elif tracking_col in df.columns:
+            df = df.rename(columns={tracking_col: "Tracking ID"})
+            st.sidebar.success(f"✅ '{tracking_col}' ko 'Tracking ID' mein rename kar diya")
         else:
-            st.sidebar.error(f"❌ Column '{expected_col}' nahi mila!\nSource: {return_source} | Tab: {worksheet_name}")
+            st.sidebar.error(f"❌ Column '{tracking_col}' nahi mila in tab: {worksheet_name}")
             return None
 
         # Received Status
@@ -107,7 +107,7 @@ def process_scan(tracking_id):
         
         if df.loc[mask, 'Received'].iloc[0] == "Received":
             st.session_state['scanned_status'] = 'warning'
-            st.session_state['scanned_message'] = f"⚠️ Already marked as received: {tracking_id}"
+            st.session_state['scanned_message'] = f"⚠️ Already marked: {tracking_id}"
         else:
             df.loc[mask, 'Received'] = "Received"
             df.loc[mask, 'Received Timestamp'] = get_current_ist_time()
@@ -117,7 +117,7 @@ def process_scan(tracking_id):
             st.session_state['scanned_message'] = f"✅ Marked as Received: {tracking_id} | SKU: {sku} | Qty: {qty}"
     else:
         st.session_state['scanned_status'] = 'error'
-        st.session_state['scanned_message'] = f"❌ Tracking ID '{tracking_id}' not found!"
+        st.session_state['scanned_message'] = f"❌ '{tracking_id}' not found!"
 
 def display_aggrid(df):
     default_cols = ['Sale Order No', 'Shipping Package Code', 'Tracking ID', 'Item SkuCode', 
@@ -190,12 +190,11 @@ def process_bulk_upload(bulk_file):
         
         matches_mask = df['Tracking ID'].isin(bulk_ids)
         already = df[matches_mask & (df['Received'] == "Received")].shape[0]
-        newly_mask = matches_mask & (df['Received'] == "Not Received")
-        newly = df[newly_mask].shape[0]
+        newly = df[matches_mask & (df['Received'] == "Not Received")].shape[0]
         
         current_time = get_current_ist_time()
-        df.loc[newly_mask, 'Received'] = "Received"
-        df.loc[newly_mask, 'Received Timestamp'] = current_time
+        df.loc[matches_mask & (df['Received'] == "Not Received"), 'Received'] = "Received"
+        df.loc[matches_mask & (df['Received'] == "Not Received"), 'Received Timestamp'] = current_time
         st.session_state['returns_df'] = df
         
         st.session_state['bulk_status'] = 'success'
@@ -211,16 +210,11 @@ def process_bulk_upload(bulk_file):
 with st.sidebar:
     st.title("⚙️ Operations")
     
-    return_source = st.selectbox(
-        "📦 Return Source:",
-        options=["Amazon - Courier Return", "Amazon - Reverse Pickup"],
-        index=0
-    )
-    
     sheet_name = st.selectbox(
         "📑 Sheet/Tab Name:",
         options=["Courier Return", "Reverse Pickup"],
-        index=0
+        index=0,
+        help="Apni Google Sheet ke tab ka naam select karo"
     )
     
     gsheet_url = st.text_input(
@@ -231,10 +225,10 @@ with st.sidebar:
     if st.button("🔄 Load Data", type="primary"):
         if gsheet_url:
             with st.spinner("Loading data..."):
-                loaded_df = load_data_from_gsheet(gsheet_url, return_source, sheet_name)
+                loaded_df = load_data_from_gsheet(gsheet_url, sheet_name)
                 if loaded_df is not None:
                     st.session_state['returns_df'] = loaded_df
-                    st.success(f"✅ Loaded from **{sheet_name}**")
+                    st.success(f"✅ Data loaded from **{sheet_name}** tab")
                     st.rerun()
         else:
             st.warning("Please enter Google Sheet link.")
@@ -249,7 +243,7 @@ with st.sidebar:
         st.download_button(
             label="📊 Download Updated Excel",
             data=excel_data,
-            file_name="amazon_returns_updated.xlsx",
+            file_name=f"amazon_returns_{sheet_name.lower().replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
@@ -269,7 +263,7 @@ st.title("📦 Amazon Returns Scanner")
 main_df = st.session_state.get('returns_df')
 
 if main_df is None:
-    st.info("👈 Sidebar mein Source aur Tab select karke **Load Data** dabao.")
+    st.info("👈 Sidebar mein **Sheet/Tab Name** select karke **Load Data** dabao.")
 else:
     total = len(main_df)
     received = (main_df['Received'] == "Received").sum()
