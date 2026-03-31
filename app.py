@@ -44,11 +44,32 @@ def load_data_from_gsheet(url, worksheet_name):
             return None
         
         sheet_id = match.group(1)
-        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
-        
-        df = pd.read_csv(csv_url)
-        
-        # Clean column names properly
+
+        # IMPORTANT: Use worksheet name to get correct gid
+        # For simplicity, we'll first try with gid=0 and then improve with gspread if needed
+        # But better approach: Use gspread to load specific worksheet by name
+
+        try:
+            import gspread
+            from google.oauth2.service_account import Credentials
+            
+            if "gcp_service_account" in st.secrets:
+                creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"])
+                client = gspread.authorize(creds)
+                spreadsheet = client.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                df = pd.DataFrame(worksheet.get_all_records())
+            else:
+                # Fallback to CSV export with gid=0 (may load wrong tab)
+                csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+                df = pd.read_csv(csv_url)
+                st.sidebar.warning("⚠️ Using default tab. For accurate tab loading, add gspread credentials.")
+        except:
+            # Fallback if gspread not available or secrets missing
+            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
+            df = pd.read_csv(csv_url)
+
+        # Clean column names
         df.columns = [str(col).strip().replace('\n', ' ').replace('  ', ' ') for col in df.columns]
 
         # Smart Tracking Column Detection
@@ -69,12 +90,10 @@ def load_data_from_gsheet(url, worksheet_name):
                 df = df.rename(columns={found_col: "Tracking ID"})
                 st.sidebar.success(f"✅ '{found_col}' ko 'Tracking ID' mein rename kar diya")
         else:
-            st.sidebar.error(f"❌ Tracking column nahi mila!\n\n"
-                             f"Sheet: **{worksheet_name}**\n"
-                             f"Available Columns: {list(df.columns)}")
+            st.sidebar.error(f"❌ Tracking column nahi mila in **{worksheet_name}**")
             return None
 
-        # Initialize Received Status
+        # Initialize Received & Timestamp
         if 'Received' not in df.columns:
             df['Received'] = "Not Received"
         else:
@@ -231,11 +250,11 @@ with st.sidebar:
     
     if st.button("🔄 Load Data", type="primary"):
         if gsheet_url:
-            with st.spinner("Loading data..."):
+            with st.spinner(f"Loading {sheet_name} tab..."):
                 loaded_df = load_data_from_gsheet(gsheet_url, sheet_name)
                 if loaded_df is not None:
                     st.session_state['returns_df'] = loaded_df
-                    st.success(f"✅ Data loaded from **{sheet_name}**")
+                    st.success(f"✅ **{sheet_name}** loaded successfully!")
                     st.rerun()
         else:
             st.warning("Please enter Google Sheet link.")
