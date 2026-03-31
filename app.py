@@ -55,7 +55,6 @@ def load_data_from_gsheet(url, worksheet_name):
 
         df.columns = [str(col).strip() for col in df.columns]
 
-        # Tracking Column
         possible = ["Tracking No", "AWB No", "Tracking ID", "AWB"]
         found = next((col for col in df.columns if any(p.lower() in col.lower() for p in possible)), None)
         if found and found != "Tracking ID":
@@ -84,10 +83,6 @@ def load_data_from_gsheet(url, worksheet_name):
         return None
 
 def sync_to_google_sheet(df, url, worksheet_name):
-    """Fixed: Returns only success and message"""
-    if not GSPREAD_AVAILABLE:
-        return False, "gspread not available"
-
     try:
         secret = st.secrets["gcp_service_account"]
         creds_dict = json.loads(secret) if isinstance(secret, str) else dict(secret)
@@ -164,7 +159,7 @@ def process_bulk_upload(bulk_file):
 
         current_time = get_current_ist_time()
 
-        # Process Courier Return
+        # Process Courier & Reverse
         if df_c is not None:
             df_c = df_c.copy()
             mask_c = df_c['Tracking ID'].isin(bulk_ids)
@@ -173,7 +168,6 @@ def process_bulk_upload(bulk_file):
             df_c.loc[mask_c & (df_c['Received'] == "Not Received"), 'Received Timestamp'] = current_time
             st.session_state['returns_df_courier'] = df_c
 
-        # Process Reverse Pickup
         if df_r is not None:
             df_r = df_r.copy()
             mask_r = df_r['Tracking ID'].isin(bulk_ids)
@@ -182,12 +176,10 @@ def process_bulk_upload(bulk_file):
             df_r.loc[mask_r & (df_r['Received'] == "Not Received"), 'Received Timestamp'] = current_time
             st.session_state['returns_df_reverse'] = df_r
 
-        # Missing IDs with Timestamp
+        # Not Found
         all_ids = set()
-        if df_c is not None:
-            all_ids.update(df_c['Tracking ID'].astype(str))
-        if df_r is not None:
-            all_ids.update(df_r['Tracking ID'].astype(str))
+        if df_c is not None: all_ids.update(df_c['Tracking ID'].astype(str))
+        if df_r is not None: all_ids.update(df_r['Tracking ID'].astype(str))
 
         missing = list(bulk_ids - all_ids)
 
@@ -266,14 +258,18 @@ with st.sidebar:
             with st.spinner("Pushing changes..."):
                 pushed = []
                 if st.session_state.get('returns_df_courier') is not None:
-                    success, msg = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
+                    success, _ = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
                     if success:
                         pushed.append("Courier Return")
                 if st.session_state.get('returns_df_reverse') is not None:
-                    success, msg = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
+                    success, _ = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
                     if success:
                         pushed.append("Reverse Pickup")
-                
+                if st.session_state.get('not_found_df') is not None and not st.session_state['not_found_df'].empty:
+                    success, _ = sync_to_google_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
+                    if success:
+                        pushed.append("Not Found")
+
                 if pushed:
                     st.success(f"✅ Successfully pushed to: {', '.join(pushed)}")
                 else:
@@ -281,7 +277,8 @@ with st.sidebar:
 
         st.download_button("📊 Download All Excel", 
                           data=to_excel(pd.concat([st.session_state.get('returns_df_courier', pd.DataFrame()), 
-                                                 st.session_state.get('returns_df_reverse', pd.DataFrame())], ignore_index=True)),
+                                                 st.session_state.get('returns_df_reverse', pd.DataFrame()),
+                                                 st.session_state.get('not_found_df', pd.DataFrame())], ignore_index=True)),
                           file_name="all_returns.xlsx")
 
 # -----------------------------------------------------------------------------
