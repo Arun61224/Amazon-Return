@@ -7,7 +7,7 @@ from datetime import datetime
 import pytz
 from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, JsCode
 
-# Google API libraries
+# Google API
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -16,7 +16,7 @@ except ImportError:
     GSPREAD_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
-# Configuration & Setup
+# Configuration
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Amazon Returns Scanner",
@@ -31,9 +31,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
 # Session State
-# -----------------------------------------------------------------------------
 for key in ['returns_df', 'scanned_message', 'scanned_status', 'bulk_message', 'bulk_status', 'missing_bulk_ids']:
     if key not in st.session_state:
         st.session_state[key] = None
@@ -72,16 +70,13 @@ def load_data_from_gsheet(url, worksheet_name):
             worksheet = spreadsheet.worksheet(worksheet_name)
             data = worksheet.get_all_records()
             df = pd.DataFrame(data)
-            st.sidebar.success(f"✅ Loaded **{worksheet_name}** using gspread")
         else:
-            st.sidebar.warning("⚠️ Using CSV fallback")
             csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
             df = pd.read_csv(csv_url)
 
-        # Clean columns
         df.columns = [str(col).strip().replace('\n', ' ').replace('  ', ' ') for col in df.columns]
 
-        # Tracking Column Detection
+        # Tracking Column
         possible_cols = ["Tracking No", "AWB No", "Tracking ID", "AWB"]
         found_col = None
         for col in df.columns:
@@ -99,7 +94,7 @@ def load_data_from_gsheet(url, worksheet_name):
             st.sidebar.error(f"❌ Tracking column not found in **{worksheet_name}**")
             return None
 
-        # Clean Tracking ID (Scientific notation + .0 fix)
+        # Clean Tracking ID
         df['Tracking ID'] = (
             df['Tracking ID']
             .astype(str)
@@ -108,7 +103,7 @@ def load_data_from_gsheet(url, worksheet_name):
             .str.replace(r'[^0-9]', '', regex=True)
         )
 
-        # Received & Timestamp
+        # Received Setup
         if 'Received' not in df.columns:
             df['Received'] = "Not Received"
         else:
@@ -119,7 +114,7 @@ def load_data_from_gsheet(url, worksheet_name):
         if 'Received Timestamp' not in df.columns:
             df['Received Timestamp'] = ""
 
-        # Rearrange columns
+        # Rearrange
         all_cols = [c for c in df.columns if c not in ['Received', 'Received Timestamp']]
         all_cols.extend(['Received', 'Received Timestamp'])
         df = df[all_cols]
@@ -130,6 +125,7 @@ def load_data_from_gsheet(url, worksheet_name):
         return None
 
 def sync_to_google_sheet(df, url, worksheet_name):
+    """Fixed Push Function"""
     if not GSPREAD_AVAILABLE:
         return False, "gspread not available"
 
@@ -151,13 +147,26 @@ def sync_to_google_sheet(df, url, worksheet_name):
         spreadsheet = client.open_by_key(match.group(1))
         worksheet = spreadsheet.worksheet(worksheet_name)
 
-        df_clean = df.fillna("").astype(str)
-        data = [df_clean.columns.tolist()] + df_clean.values.tolist()
+        # Make sure columns exist
+        if 'Received' not in df.columns:
+            df['Received'] = "Not Received"
+        if 'Received Timestamp' not in df.columns:
+            df['Received Timestamp'] = ""
 
+        # Clean data for upload
+        df_clean = df.copy()
+        df_clean = df_clean.fillna("")
+        df_clean['Tracking ID'] = df_clean['Tracking ID'].astype(str)
+        df_clean['Received Timestamp'] = df_clean['Received Timestamp'].astype(str)
+
+        # Prepare data
+        data_to_upload = [df_clean.columns.tolist()] + df_clean.values.tolist()
+
+        # Clear and update
         worksheet.clear()
-        worksheet.update(range_name="A1", values=data)
+        worksheet.update(range_name="A1", values=data_to_upload)
 
-        return True, f"✅ Data pushed successfully to **{worksheet_name}**!"
+        return True, f"✅ Data successfully pushed to **{worksheet_name}** tab!"
     except Exception as e:
         return False, f"Push Error: {str(e)}"
 
@@ -182,9 +191,8 @@ def process_scan(tracking_id):
             current_time = get_current_ist_time()
             df.loc[idx, 'Received'] = "Received"
             df.loc[idx, 'Received Timestamp'] = current_time
-            
             st.session_state['returns_df'] = df.copy()
-            
+
             sku = df.loc[idx].get('SKU', df.loc[idx].get('Item SkuCode', 'N/A'))
             qty = df.loc[idx].get('Quantity', df.loc[idx].get('Total Received Items', 'N/A'))
             
@@ -304,7 +312,7 @@ with st.sidebar:
         st.markdown("### ☁️ Sync to Google Sheet")
         
         if st.button("🚀 Push to Google Sheet", type="primary", use_container_width=True):
-            with st.spinner("Pushing data..."):
+            with st.spinner("Pushing data to Google Sheet..."):
                 success, msg = sync_to_google_sheet(current_df, gsheet_url, sheet_name)
                 if success:
                     st.success(msg)
