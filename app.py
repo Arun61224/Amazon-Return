@@ -47,9 +47,11 @@ def load_data_from_gsheet(url, worksheet_name):
         csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
         
         df = pd.read_csv(csv_url)
-        df.columns = df.columns.str.strip()
+        
+        # Improved Column Cleaning
+        df.columns = [str(col).strip().replace('\n', ' ').replace('  ', ' ') for col in df.columns]
 
-        # Column Mapping based on Sheet Name
+        # Determine which column to use as Tracking ID
         if worksheet_name == "Courier Return":
             tracking_col = "AWB No"
         elif worksheet_name == "Reverse Pickup":
@@ -57,16 +59,28 @@ def load_data_from_gsheet(url, worksheet_name):
         else:
             tracking_col = "Tracking ID"
 
-        if "Tracking ID" in df.columns:
-            pass  # Already standardized
-        elif tracking_col in df.columns:
-            df = df.rename(columns={tracking_col: "Tracking ID"})
-            st.sidebar.success(f"✅ '{tracking_col}' ko 'Tracking ID' mein rename kar diya")
+        # Robust search for tracking column
+        found_col = None
+        for col in df.columns:
+            clean_col = col.strip().lower()
+            if clean_col == tracking_col.lower() or \
+               clean_col.replace(" ", "") == tracking_col.lower().replace(" ", "") or \
+               clean_col.replace("_", " ") == tracking_col.lower():
+                found_col = col
+                break
+
+        if found_col:
+            if found_col != "Tracking ID":
+                df = df.rename(columns={found_col: "Tracking ID"})
+                st.sidebar.success(f"✅ '{found_col}' ko 'Tracking ID' mein rename kar diya")
         else:
-            st.sidebar.error(f"❌ Column '{tracking_col}' nahi mila in tab: {worksheet_name}")
+            st.sidebar.error(f"❌ **Tracking column nahi mila!**\n\n"
+                             f"Sheet: **{worksheet_name}**\n"
+                             f"Expected: **{tracking_col}**\n\n"
+                             f"Available Columns:\n{list(df.columns)}")
             return None
 
-        # Received Status
+        # Initialize Received Status
         if 'Received' not in df.columns:
             df['Received'] = "Not Received"
         else:
@@ -77,16 +91,17 @@ def load_data_from_gsheet(url, worksheet_name):
         if 'Received Timestamp' not in df.columns:
             df['Received Timestamp'] = ""
             
+        # Clean Tracking ID
         df['Tracking ID'] = df['Tracking ID'].astype(str).str.strip().str.lower()
         
-        # Keep Received columns at the end
+        # Keep 'Received' and 'Received Timestamp' at the end
         all_cols = [c for c in df.columns if c not in ['Received', 'Received Timestamp']]
         all_cols.extend(['Received', 'Received Timestamp'])
         df = df[all_cols]
         
         return df
     except Exception as e:
-        st.sidebar.error(f"Error loading data: {e}")
+        st.sidebar.error(f"Error loading data: {str(e)}")
         return None
 
 def process_scan(tracking_id):
@@ -228,7 +243,7 @@ with st.sidebar:
                 loaded_df = load_data_from_gsheet(gsheet_url, sheet_name)
                 if loaded_df is not None:
                     st.session_state['returns_df'] = loaded_df
-                    st.success(f"✅ Data loaded from **{sheet_name}** tab")
+                    st.success(f"✅ Data loaded successfully from **{sheet_name}**")
                     st.rerun()
         else:
             st.warning("Please enter Google Sheet link.")
