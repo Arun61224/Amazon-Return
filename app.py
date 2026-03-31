@@ -23,7 +23,8 @@ st.set_page_config(page_title="Amazon Returns Scanner", page_icon="📦", layout
 st.markdown("<style>.big-font {font-size: 24px !important; font-weight: bold;}</style>", unsafe_allow_html=True)
 
 # Session State
-for key in ['returns_df', 'scanned_message', 'scanned_status', 'bulk_message', 'bulk_status', 'missing_bulk_ids']:
+for key in ['returns_df_courier', 'returns_df_reverse', 'scanned_message', 'scanned_status', 
+            'bulk_message', 'bulk_status', 'missing_bulk_ids']:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -61,7 +62,6 @@ def load_data_from_gsheet(url, worksheet_name):
             df = df.rename(columns={found: "Tracking ID"})
 
         if 'Tracking ID' not in df.columns:
-            st.sidebar.error(f"Tracking column not found in {worksheet_name}")
             return None
 
         df['Tracking ID'] = df['Tracking ID'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
@@ -78,8 +78,7 @@ def load_data_from_gsheet(url, worksheet_name):
         df = df[cols]
 
         return df
-    except Exception as e:
-        st.sidebar.error(f"Load Error: {e}")
+    except:
         return None
 
 def sync_to_google_sheet(df, url, worksheet_name):
@@ -101,14 +100,14 @@ def sync_to_google_sheet(df, url, worksheet_name):
 
         worksheet.clear()
         worksheet.update("A1", data)
-        return True, f"✅ Pushed to **{worksheet_name}**"
-    except Exception as e:
-        return False, f"Push failed: {e}"
+        return True
+    except:
+        return False
 
-def process_scan(tracking_id):
-    df = st.session_state.get('returns_df')
+def process_scan(tracking_id, df_key):
+    df = st.session_state.get(df_key)
     if df is None:
-        st.error("Load sheet first!")
+        st.error("Load data first!")
         return
 
     clean_id = str(tracking_id).strip().lower()
@@ -117,73 +116,25 @@ def process_scan(tracking_id):
         idx = mask.idxmax()
         if df.loc[idx, 'Received'] == "Received":
             st.session_state['scanned_status'] = 'warning'
-            st.session_state['scanned_message'] = f"⚠️ Already marked: {tracking_id}"
+            st.session_state['scanned_message'] = f"⚠️ Already marked"
         else:
             current_time = get_current_ist_time()
             df = df.copy()
             df.loc[idx, 'Received'] = "Received"
             df.loc[idx, 'Received Timestamp'] = current_time
-            st.session_state['returns_df'] = df
-
-            sku = df.loc[idx].get('Item SkuCode', 'N/A')
-            qty = df.loc[idx].get('Total Received Items', 'N/A')
+            st.session_state[df_key] = df
             st.session_state['scanned_status'] = 'success'
-            st.session_state['scanned_message'] = f"✅ Marked: {tracking_id} | SKU: {sku} | Qty: {qty}"
+            st.session_state['scanned_message'] = f"✅ Marked: {tracking_id}"
     else:
         st.session_state['scanned_status'] = 'error'
         st.session_state['scanned_message'] = f"❌ Not found"
 
-def process_bulk_upload(bulk_file):
-    df = st.session_state.get('returns_df')
-    if df is None:
-        st.error("Load sheet first!")
-        return
-
-    try:
-        if bulk_file.name.endswith('.csv'):
-            bulk_df = pd.read_csv(bulk_file)
-        else:
-            bulk_df = pd.read_excel(bulk_file)
-
-        if 'Tracking ID' not in bulk_df.columns:
-            st.error("'Tracking ID' column not found")
-            return
-
-        bulk_ids = set(bulk_df['Tracking ID'].astype(str).str.strip().str.lower())
-        matches = df['Tracking ID'].isin(bulk_ids)
-
-        newly = (matches & (df['Received'] == "Not Received")).sum()
-        already = (matches & (df['Received'] == "Received")).sum()
-        missing_ids = list(bulk_ids - set(df['Tracking ID'].astype(str)))
-
-        current_time = get_current_ist_time()
-        
-        # Strong fix for bulk timestamp
-        df = df.copy()
-        update_mask = matches & (df['Received'] == "Not Received")
-        df.loc[update_mask, 'Received'] = "Received"
-        df.loc[update_mask, 'Received Timestamp'] = current_time
-
-        st.session_state['returns_df'] = df
-        st.session_state['missing_bulk_ids'] = missing_ids
-        st.session_state['bulk_status'] = 'success'
-
-        msg = f"✅ **Bulk Update Complete!**\n\n"
-        msg += f"🎯 **Newly Marked**: {newly}\n"
-        msg += f"⚠️ **Already Marked**: {already}\n"
-        msg += f"❌ **Not Found**: {len(missing_ids)}"
-
-        st.session_state['bulk_message'] = msg
-
-    except Exception as e:
-        st.error(f"Error: {e}")
-
-def display_aggrid(df):
+def display_aggrid(df, title):
+    st.subheader(title)
     cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
     display_cols = [c for c in cols if c in df.columns]
     gb = GridOptionsBuilder.from_dataframe(df[display_cols])
     gb.configure_pagination(paginationPageSize=50)
-    gb.configure_default_column(filterable=True, sortable=True)
     AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
 
 def to_excel(df):
@@ -198,55 +149,132 @@ def get_bulk_template_csv():
 def get_missing_ids_csv(missing_ids):
     return pd.DataFrame({'Missing Tracking ID': missing_ids}).to_csv(index=False).encode('utf-8')
 
+def process_bulk_upload(bulk_file):
+    df_courier = st.session_state.get('returns_df_courier')
+    df_reverse = st.session_state.get('returns_df_reverse')
+
+    if df_courier is None and df_reverse is None:
+        st.error("Please load both sheets first!")
+        return
+
+    try:
+        if bulk_file.name.endswith('.csv'):
+            bulk_df = pd.read_csv(bulk_file)
+        else:
+            bulk_df = pd.read_excel(bulk_file)
+
+        if 'Tracking ID' not in bulk_df.columns:
+            st.error("'Tracking ID' column not found")
+            return
+
+        bulk_ids = set(bulk_df['Tracking ID'].astype(str).str.strip().str.lower())
+
+        newly_c = 0
+        newly_r = 0
+        already = 0
+        missing = []
+
+        current_time = get_current_ist_time()
+
+        # Process Courier Return
+        if df_courier is not None:
+            df_c = df_courier.copy()
+            mask_c = df_c['Tracking ID'].isin(bulk_ids)
+            newly_c = (mask_c & (df_c['Received'] == "Not Received")).sum()
+            df_c.loc[mask_c & (df_c['Received'] == "Not Received"), 'Received'] = "Received"
+            df_c.loc[mask_c & (df_c['Received'] == "Not Received"), 'Received Timestamp'] = current_time
+            st.session_state['returns_df_courier'] = df_c
+
+        # Process Reverse Pickup
+        if df_reverse is not None:
+            df_r = df_reverse.copy()
+            mask_r = df_r['Tracking ID'].isin(bulk_ids)
+            newly_r = (mask_r & (df_r['Received'] == "Not Received")).sum()
+            df_r.loc[mask_r & (df_r['Received'] == "Not Received"), 'Received'] = "Received"
+            df_r.loc[mask_r & (df_r['Received'] == "Not Received"), 'Received Timestamp'] = current_time
+            st.session_state['returns_df_reverse'] = df_r
+
+        # Missing IDs
+        all_ids = set()
+        if df_courier is not None:
+            all_ids.update(df_courier['Tracking ID'].astype(str))
+        if df_reverse is not None:
+            all_ids.update(df_reverse['Tracking ID'].astype(str))
+
+        missing = list(bulk_ids - all_ids)
+
+        st.session_state['missing_bulk_ids'] = missing
+        st.session_state['bulk_status'] = 'success'
+
+        msg = f"✅ **Bulk Update Complete!**\n\n"
+        msg += f"🎯 **Courier Return** - Newly Marked: {newly_c}\n"
+        msg += f"🎯 **Reverse Pickup** - Newly Marked: {newly_r}\n"
+        msg += f"❌ **Not Found**: {len(missing)}"
+
+        st.session_state['bulk_message'] = msg
+
+    except Exception as e:
+        st.error(f"Error: {e}")
+
 # -----------------------------------------------------------------------------
 # Sidebar
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ Operations")
     
-    sheet_name = st.selectbox("Sheet/Tab Name", ["Courier Return", "Reverse Pickup"])
-    gsheet_url = st.text_input("Google Sheet Link", value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing")
+    gsheet_url = st.text_input("Google Sheet Link", 
+        value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing")
 
-    if st.button("🔄 Load Data", type="primary"):
-        with st.spinner("Loading..."):
-            df = load_data_from_gsheet(gsheet_url, sheet_name)
-            if df is not None:
-                st.session_state['returns_df'] = df
-                st.success(f"✅ {sheet_name} Loaded")
-                st.rerun()
+    if st.button("🔄 Load Both Sheets", type="primary"):
+        with st.spinner("Loading Courier Return..."):
+            df_c = load_data_from_gsheet(gsheet_url, "Courier Return")
+            if df_c is not None:
+                st.session_state['returns_df_courier'] = df_c
 
-    if st.session_state.get('returns_df') is not None:
+        with st.spinner("Loading Reverse Pickup..."):
+            df_r = load_data_from_gsheet(gsheet_url, "Reverse Pickup")
+            if df_r is not None:
+                st.session_state['returns_df_reverse'] = df_r
+
+        st.success("✅ Both sheets loaded!")
+
+    if st.session_state.get('returns_df_courier') is not None or st.session_state.get('returns_df_reverse') is not None:
         st.divider()
-        if st.button("🚀 Push to Google Sheet", type="primary"):
-            with st.spinner("Pushing..."):
-                success, msg = sync_to_google_sheet(st.session_state['returns_df'], gsheet_url, sheet_name)
-                if success:
-                    st.success(msg)
-                else:
-                    st.error(msg)
+        if st.button("🚀 Push All Changes", type="primary"):
+            success_c = False
+            success_r = False
+            if st.session_state.get('returns_df_courier') is not None:
+                success_c, _ = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
+            if st.session_state.get('returns_df_reverse') is not None:
+                success_r, _ = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
+            
+            if success_c or success_r:
+                st.success("✅ Changes pushed to Google Sheet!")
+            else:
+                st.error("Push failed")
 
-        st.download_button("📊 Download Excel", data=to_excel(st.session_state['returns_df']),
-                          file_name=f"returns_{sheet_name.replace(' ','_')}.xlsx")
-
-        st.divider()
-        if st.button("🗑️ Clear All Marked IDs", type="secondary"):
-            df = st.session_state['returns_df'].copy()
-            df['Received'] = "Not Received"
-            df['Received Timestamp'] = ""
-            st.session_state['returns_df'] = df
-            st.success("All marks cleared!")
+        st.download_button("📊 Download All Excel", 
+                          data=to_excel(pd.concat([st.session_state.get('returns_df_courier', pd.DataFrame()), 
+                                                 st.session_state.get('returns_df_reverse', pd.DataFrame())], ignore_index=True)),
+                          file_name="all_returns.xlsx")
 
 # -----------------------------------------------------------------------------
 # Main UI
 # -----------------------------------------------------------------------------
 st.title("📦 Amazon Returns Scanner")
 
-if st.session_state.get('returns_df') is None:
-    st.info("Load data from sidebar")
+df_c = st.session_state.get('returns_df_courier')
+df_r = st.session_state.get('returns_df_reverse')
+
+if df_c is None and df_r is None:
+    st.info("Click **Load Both Sheets** from sidebar")
 else:
-    df = st.session_state['returns_df']
-    total = len(df)
-    received = (df['Received'] == "Received").sum()
+    total = (len(df_c) if df_c is not None else 0) + (len(df_r) if df_r is not None else 0)
+    received = 0
+    if df_c is not None:
+        received += (df_c['Received'] == "Received").sum()
+    if df_r is not None:
+        received += (df_r['Received'] == "Received").sum()
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Returns", total)
@@ -260,21 +288,25 @@ else:
         with st.form("scan", clear_on_submit=True):
             tid = st.text_input("AWB / Tracking No", placeholder="Scan or type here...")
             if st.form_submit_button("Mark as Received"):
-                process_scan(tid)
+                # Try in both sheets
+                if df_c is not None:
+                    process_scan(tid, 'returns_df_courier')
+                if df_r is not None:
+                    process_scan(tid, 'returns_df_reverse')
 
         if st.session_state.get('scanned_message'):
             if st.session_state.get('scanned_status') == 'success':
                 st.success(st.session_state['scanned_message'])
-            elif st.session_state.get('scanned_status') == 'warning':
-                st.warning(st.session_state['scanned_message'])
             else:
                 st.error(st.session_state['scanned_message'])
 
-        st.markdown("### Data Overview")
-        display_aggrid(df)
+        if df_c is not None:
+            display_aggrid(df_c, "Courier Return")
+        if df_r is not None:
+            display_aggrid(df_r, "Reverse Pickup")
 
     with tab2:
-        st.markdown("### 📥 Bulk Upload")
+        st.markdown("### 📥 Bulk Upload (One File for Both Sheets)")
         st.download_button("⬇️ Download Template", data=get_bulk_template_csv(), file_name="template.csv", mime="text/csv")
         
         bulk_file = st.file_uploader("Upload Filled Template", type=['csv', 'xlsx'])
