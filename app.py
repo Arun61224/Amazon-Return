@@ -7,7 +7,7 @@ from datetime import datetime
 import pytz
 from st_aggrid import AgGrid, GridOptionsBuilder, ColumnsAutoSizeMode, JsCode
 
-# Google API Setup
+# Google API
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -74,7 +74,6 @@ def load_data_from_gsheet(url, worksheet_name):
         if 'Received Timestamp' not in df.columns:
             df['Received Timestamp'] = ""
 
-        # Column Order
         cols = [c for c in df.columns if c not in ['Received', 'Received Timestamp']]
         cols += ['Received', 'Received Timestamp']
         df = df[cols]
@@ -103,7 +102,7 @@ def sync_to_google_sheet(df, url, worksheet_name):
 
         worksheet.clear()
         worksheet.update("A1", data)
-        return True, f"✅ Data pushed to **{worksheet_name}**"
+        return True, f"✅ Pushed to **{worksheet_name}**"
     except Exception as e:
         return False, f"Push failed: {e}"
 
@@ -117,16 +116,23 @@ def process_scan(tracking_id):
     mask = df['Tracking ID'] == clean_id
     if mask.any():
         idx = mask.idxmax()
+
         if df.loc[idx, 'Received'] == "Received":
             st.session_state['scanned_status'] = 'warning'
-            st.session_state['scanned_message'] = f"⚠️ Already marked"
+            st.session_state['scanned_message'] = f"⚠️ Already marked: {tracking_id}"
         else:
+            current_time = get_current_ist_time()
+            
+            # Strong Timestamp Fix
+            df = df.copy()  # Important
             df.loc[idx, 'Received'] = "Received"
-            df.loc[idx, 'Received Timestamp'] = get_current_ist_time()
-            st.session_state['returns_df'] = df.copy()
+            df.loc[idx, 'Received Timestamp'] = current_time
+            
+            st.session_state['returns_df'] = df
 
-            sku = df.loc[idx].get('Item SkuCode', 'N/A')
-            qty = df.loc[idx].get('Total Received Items', 'N/A')
+            sku = df.loc[idx].get('Item SkuCode', df.loc[idx].get('SKU', 'N/A'))
+            qty = df.loc[idx].get('Total Received Items', df.loc[idx].get('Quantity', 'N/A'))
+
             st.session_state['scanned_status'] = 'success'
             st.session_state['scanned_message'] = f"✅ Marked: {tracking_id} | SKU: {sku} | Qty: {qty}"
     else:
@@ -177,6 +183,7 @@ def process_bulk_upload(bulk_file):
         missing_ids = list(bulk_ids - set(df['Tracking ID'].astype(str)))
 
         current_time = get_current_ist_time()
+        df = df.copy()
         df.loc[matches & (df['Received'] == "Not Received"), 'Received'] = "Received"
         df.loc[matches & (df['Received'] == "Not Received"), 'Received Timestamp'] = current_time
 
@@ -201,8 +208,7 @@ with st.sidebar:
     st.title("⚙️ Operations")
     
     sheet_name = st.selectbox("Sheet/Tab Name", ["Courier Return", "Reverse Pickup"])
-    gsheet_url = st.text_input("Google Sheet Link", 
-        value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing")
+    gsheet_url = st.text_input("Google Sheet Link", value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing")
 
     if st.button("🔄 Load Data", type="primary"):
         with st.spinner("Loading..."):
@@ -214,7 +220,6 @@ with st.sidebar:
 
     if st.session_state.get('returns_df') is not None:
         st.divider()
-        st.markdown("### Sync")
         if st.button("🚀 Push to Google Sheet", type="primary"):
             with st.spinner("Pushing..."):
                 success, msg = sync_to_google_sheet(st.session_state['returns_df'], gsheet_url, sheet_name)
@@ -223,13 +228,12 @@ with st.sidebar:
                 else:
                     st.error(msg)
 
-        st.download_button("📊 Download Excel", 
-                          data=to_excel(st.session_state['returns_df']),
+        st.download_button("📊 Download Excel", data=to_excel(st.session_state['returns_df']),
                           file_name=f"returns_{sheet_name.replace(' ','_')}.xlsx")
 
         st.divider()
         if st.button("🗑️ Clear All Marked IDs", type="secondary"):
-            df = st.session_state['returns_df']
+            df = st.session_state['returns_df'].copy()
             df['Received'] = "Not Received"
             df['Received Timestamp'] = ""
             st.session_state['returns_df'] = df
@@ -274,7 +278,6 @@ else:
 
     with tab2:
         st.markdown("### 📥 Bulk Upload")
-        
         st.download_button("⬇️ Download Template", data=get_bulk_template_csv(), file_name="template.csv", mime="text/csv")
         
         bulk_file = st.file_uploader("Upload Filled Template", type=['csv', 'xlsx'])
@@ -289,14 +292,10 @@ else:
         if bulk_msg:
             if st.session_state.get('bulk_status') == 'success':
                 st.success(bulk_msg)
-                
                 missing = st.session_state.get('missing_bulk_ids')
                 if missing and len(missing) > 0:
-                    st.download_button(
-                        label="⬇️ Download Not Found IDs",
-                        data=get_missing_ids_csv(missing),
-                        file_name="missing_ids.csv",
-                        mime="text/csv"
-                    )
+                    st.download_button("⬇️ Download Not Found IDs", 
+                                     data=get_missing_ids_csv(missing),
+                                     file_name="missing_ids.csv", mime="text/csv")
             else:
                 st.error(bulk_msg)
