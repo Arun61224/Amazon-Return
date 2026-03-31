@@ -66,7 +66,6 @@ def load_data_from_gsheet(url, worksheet_name):
 
         df['Tracking ID'] = df['Tracking ID'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
 
-        # Received Setup
         if 'Received' not in df.columns:
             df['Received'] = "Not Received"
         df['Received'] = df['Received'].apply(lambda x: "Received" if str(x).strip().lower() in ['true','received','yes','1'] else "Not Received")
@@ -158,9 +157,12 @@ def process_bulk_upload(bulk_file):
         missing_ids = list(bulk_ids - set(df['Tracking ID'].astype(str)))
 
         current_time = get_current_ist_time()
-        df = df.copy()   # Important for timestamp
-        df.loc[matches & (df['Received'] == "Not Received"), 'Received'] = "Received"
-        df.loc[matches & (df['Received'] == "Not Received"), 'Received Timestamp'] = current_time
+        
+        # Strong fix for bulk timestamp
+        df = df.copy()
+        update_mask = matches & (df['Received'] == "Not Received")
+        df.loc[update_mask, 'Received'] = "Received"
+        df.loc[update_mask, 'Received Timestamp'] = current_time
 
         st.session_state['returns_df'] = df
         st.session_state['missing_bulk_ids'] = missing_ids
