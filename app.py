@@ -102,9 +102,9 @@ def sync_to_google_sheet(df, url, worksheet_name):
 
         worksheet.clear()
         worksheet.update("A1", data)
-        return True, f"✅ Pushed to **{worksheet_name}**"
+        return True
     except Exception as e:
-        return False, f"Push failed: {e}"
+        return False
 
 def process_scan(tracking_id, df_key):
     df = st.session_state.get(df_key)
@@ -186,8 +186,7 @@ def process_bulk_upload(bulk_file):
             all_ids.update(df_r['Tracking ID'].astype(str))
 
         missing = list(bulk_ids - all_ids)
-        
-        # Create Not Found DataFrame with Timestamp
+
         if missing:
             not_found_df = pd.DataFrame({
                 'Tracking ID': missing,
@@ -196,7 +195,7 @@ def process_bulk_upload(bulk_file):
             })
             st.session_state['not_found_df'] = not_found_df
         else:
-            st.session_state['not_found_df'] = None
+            st.session_state['not_found_df'] = pd.DataFrame()
 
         st.session_state['missing_bulk_ids'] = missing
         st.session_state['bulk_status'] = 'success'
@@ -215,10 +214,13 @@ def display_aggrid(df, title):
     st.subheader(title)
     cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
     display_cols = [c for c in cols if c in df.columns]
-    gb = GridOptionsBuilder.from_dataframe(df[display_cols])
-    gb.configure_pagination(paginationPageSize=50)
-    gb.configure_default_column(filterable=True, sortable=True)
-    AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
+    if display_cols:
+        gb = GridOptionsBuilder.from_dataframe(df[display_cols])
+        gb.configure_pagination(paginationPageSize=50)
+        gb.configure_default_column(filterable=True, sortable=True)
+        AgGrid(df[display_cols], gridOptions=gb.build(), theme='streamlit')
+    else:
+        st.info("No data to display")
 
 def to_excel(df):
     output = io.BytesIO()
