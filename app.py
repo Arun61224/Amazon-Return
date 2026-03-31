@@ -48,25 +48,20 @@ def load_data_from_gsheet(url, worksheet_name):
         
         df = pd.read_csv(csv_url)
         
-        # Improved Column Cleaning
+        # Clean column names properly
         df.columns = [str(col).strip().replace('\n', ' ').replace('  ', ' ') for col in df.columns]
 
-        # Determine which column to use as Tracking ID
-        if worksheet_name == "Courier Return":
-            tracking_col = "AWB No"
-        elif worksheet_name == "Reverse Pickup":
-            tracking_col = "Tracking No"
-        else:
-            tracking_col = "Tracking ID"
-
-        # Robust search for tracking column
+        # Smart Tracking Column Detection
+        possible_tracking_cols = ["Tracking No", "AWB No", "Tracking ID", "AWB", "TrackingNumber"]
+        
         found_col = None
         for col in df.columns:
             clean_col = col.strip().lower()
-            if clean_col == tracking_col.lower() or \
-               clean_col.replace(" ", "") == tracking_col.lower().replace(" ", "") or \
-               clean_col.replace("_", " ") == tracking_col.lower():
-                found_col = col
+            for possible in possible_tracking_cols:
+                if clean_col == possible.lower() or clean_col.replace(" ", "") == possible.lower().replace(" ", ""):
+                    found_col = col
+                    break
+            if found_col:
                 break
 
         if found_col:
@@ -74,10 +69,9 @@ def load_data_from_gsheet(url, worksheet_name):
                 df = df.rename(columns={found_col: "Tracking ID"})
                 st.sidebar.success(f"✅ '{found_col}' ko 'Tracking ID' mein rename kar diya")
         else:
-            st.sidebar.error(f"❌ **Tracking column nahi mila!**\n\n"
+            st.sidebar.error(f"❌ Tracking column nahi mila!\n\n"
                              f"Sheet: **{worksheet_name}**\n"
-                             f"Expected: **{tracking_col}**\n\n"
-                             f"Available Columns:\n{list(df.columns)}")
+                             f"Available Columns: {list(df.columns)}")
             return None
 
         # Initialize Received Status
@@ -91,10 +85,9 @@ def load_data_from_gsheet(url, worksheet_name):
         if 'Received Timestamp' not in df.columns:
             df['Received Timestamp'] = ""
             
-        # Clean Tracking ID
         df['Tracking ID'] = df['Tracking ID'].astype(str).str.strip().str.lower()
         
-        # Keep 'Received' and 'Received Timestamp' at the end
+        # Keep Received columns at the end
         all_cols = [c for c in df.columns if c not in ['Received', 'Received Timestamp']]
         all_cols.extend(['Received', 'Received Timestamp'])
         df = df[all_cols]
@@ -228,8 +221,7 @@ with st.sidebar:
     sheet_name = st.selectbox(
         "📑 Sheet/Tab Name:",
         options=["Courier Return", "Reverse Pickup"],
-        index=0,
-        help="Apni Google Sheet ke tab ka naam select karo"
+        index=0
     )
     
     gsheet_url = st.text_input(
@@ -243,7 +235,7 @@ with st.sidebar:
                 loaded_df = load_data_from_gsheet(gsheet_url, sheet_name)
                 if loaded_df is not None:
                     st.session_state['returns_df'] = loaded_df
-                    st.success(f"✅ Data loaded successfully from **{sheet_name}**")
+                    st.success(f"✅ Data loaded from **{sheet_name}**")
                     st.rerun()
         else:
             st.warning("Please enter Google Sheet link.")
@@ -278,7 +270,7 @@ st.title("📦 Amazon Returns Scanner")
 main_df = st.session_state.get('returns_df')
 
 if main_df is None:
-    st.info("👈 Sidebar mein **Sheet/Tab Name** select karke **Load Data** dabao.")
+    st.info("👈 Sidebar mein Sheet/Tab Name select karke **Load Data** dabao.")
 else:
     total = len(main_df)
     received = (main_df['Received'] == "Received").sum()
