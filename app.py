@@ -106,6 +106,46 @@ def sync_to_google_sheet(df, url, worksheet_name):
     except Exception as e:
         return False, f"Push failed: {e}"
 
+def sync_not_found_sheet(df, url, worksheet_name):
+    # Yeh function Google Sheets se purana "Not Found" data load karega aur usme naya data add karega (Purana data delete nahi hoga)
+    try:
+        secret = st.secrets["gcp_service_account"]
+        creds_dict = json.loads(secret) if isinstance(secret, str) else dict(secret)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+        creds = Credentials.from_service_account_info(creds_dict, 
+                    scopes=['https://www.googleapis.com/auth/spreadsheets'])
+        client = gspread.authorize(creds)
+
+        sheet_id = re.search(r'/d/([a-zA-Z0-9-_]+)', url).group(1)
+        worksheet = client.open_by_key(sheet_id).worksheet(worksheet_name)
+
+        # Pehle check karte hain ki sheet mein koi purana data hai ya nahi
+        try:
+            existing_data = worksheet.get_all_records()
+            if existing_data:
+                existing_df = pd.DataFrame(existing_data)
+                # Purane aur naye data ko aapas me jod dete hain
+                combined_df = pd.concat([existing_df, df])
+                # Duplicates remove kar dete hain (Latest wali process time ko rakhte hue)
+                combined_df['Tracking ID'] = combined_df['Tracking ID'].astype(str).str.strip()
+                combined_df = combined_df.drop_duplicates(subset=['Tracking ID'], keep='last')
+            else:
+                combined_df = df
+        except Exception:
+            # Agar koi exception aati hai (jaise sheet totally empty hai), toh sirf naya data lete hain
+            combined_df = df
+
+        df_clean = combined_df.fillna("").astype(str)
+        data = [df_clean.columns.tolist()] + df_clean.values.tolist()
+
+        worksheet.clear()
+        worksheet.update("A1", data)
+        return True, f"✅ Pushed & Updated to **{worksheet_name}**"
+    except Exception as e:
+        return False, f"Push failed: {e}"
+
 def process_scan(tracking_id, df_key):
     df = st.session_state.get(df_key)
     if df is None:
@@ -274,7 +314,8 @@ with st.sidebar:
                     if success:
                         pushed.append("Reverse Pickup")
                 if st.session_state.get('not_found_df') is not None and not st.session_state['not_found_df'].empty:
-                    success, _ = sync_to_google_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
+                    # Yaha hum apna naya function use kar rahe hain jo purana data retain karega
+                    success, _ = sync_not_found_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
                     if success:
                         pushed.append("Not Found")
 
