@@ -44,10 +44,13 @@ def load_data_from_gsheet(url, worksheet_name):
                 creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
             creds = Credentials.from_service_account_info(creds_dict, 
-                        scopes=['https://www.googleapis.com/auth/spreadsheets'])
+                        scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'])
             client = gspread.authorize(creds)
             worksheet = client.open_by_key(sheet_id).worksheet(worksheet_name)
-            df = pd.DataFrame(worksheet.get_all_records())
+            data = worksheet.get_all_records()
+            if not data:
+                return pd.DataFrame()
+            df = pd.DataFrame(data)
         else:
             csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
             df = pd.read_csv(csv_url)
@@ -59,6 +62,7 @@ def load_data_from_gsheet(url, worksheet_name):
             df = df.rename(columns={found: "Tracking ID"})
 
         if 'Tracking ID' not in df.columns:
+            st.sidebar.error(f"Tracking ID column missing in {worksheet_name}")
             return None
 
         df['Tracking ID'] = df['Tracking ID'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
@@ -75,47 +79,24 @@ def load_data_from_gsheet(url, worksheet_name):
 
 def sync_to_google_sheet(df, url, worksheet_name):
     try:
+        if df is None or df.empty: return False, "No data"
         secret = st.secrets["gcp_service_account"]
         creds_dict = json.loads(secret) if isinstance(secret, str) else dict(secret)
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        creds = Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'])
         client = gspread.authorize(creds)
         sheet_id = re.search(r'/d/([a-zA-Z0-9-_]+)', url).group(1)
         worksheet = client.open_by_key(sheet_id).worksheet(worksheet_name)
+        
         df_clean = df.fillna("").astype(str)
         data = [df_clean.columns.tolist()] + df_clean.values.tolist()
+        
         worksheet.clear()
         worksheet.update("A1", data)
         return True, "Success"
     except Exception as e:
-        return False, str(e)
-
-def sync_not_found_sheet(df, url, worksheet_name):
-    try:
-        secret = st.secrets["gcp_service_account"]
-        creds_dict = json.loads(secret) if isinstance(secret, str) else dict(secret)
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        creds = Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-        client = gspread.authorize(creds)
-        sheet_id = re.search(r'/d/([a-zA-Z0-9-_]+)', url).group(1)
-        worksheet = client.open_by_key(sheet_id).worksheet(worksheet_name)
-        try:
-            existing_data = worksheet.get_all_records()
-            if existing_data:
-                existing_df = pd.DataFrame(existing_data)
-                combined_df = pd.concat([existing_df, df]).drop_duplicates(subset=['Tracking ID'], keep='last')
-            else:
-                combined_df = df
-        except:
-            combined_df = df
-        df_clean = combined_df.fillna("").astype(str)
-        data = [df_clean.columns.tolist()] + df_clean.values.tolist()
-        worksheet.clear()
-        worksheet.update("A1", data)
-        return True, "Success"
-    except Exception as e:
+        st.error(f"Sync Error ({worksheet_name}): {e}")
         return False, str(e)
 
 def process_scan(tracking_id):
@@ -131,8 +112,8 @@ def process_scan(tracking_id):
             if df.loc[idx, 'Received'] == "Received":
                 st.session_state['scanned_status'], st.session_state['scanned_message'] = 'warning', f"⚠️ Already marked in Courier: {tracking_id}"
             else:
-                df.loc[idx, 'Received'] = "Received"
-                df.loc[idx, 'Received Timestamp'] = get_current_ist_time()
+                df.at[idx, 'Received'] = "Received"
+                df.at[idx, 'Received Timestamp'] = get_current_ist_time()
                 st.session_state['returns_df_courier'] = df
                 st.session_state['scanned_status'], st.session_state['scanned_message'] = 'success', f"✅ Marked (Courier): {tracking_id}"
             found = True
@@ -146,8 +127,8 @@ def process_scan(tracking_id):
             if df.loc[idx, 'Received'] == "Received":
                 st.session_state['scanned_status'], st.session_state['scanned_message'] = 'warning', f"⚠️ Already marked in Reverse: {tracking_id}"
             else:
-                df.loc[idx, 'Received'] = "Received"
-                df.loc[idx, 'Received Timestamp'] = get_current_ist_time()
+                df.at[idx, 'Received'] = "Received"
+                df.at[idx, 'Received Timestamp'] = get_current_ist_time()
                 st.session_state['returns_df_reverse'] = df
                 st.session_state['scanned_status'], st.session_state['scanned_message'] = 'success', f"✅ Marked (Reverse): {tracking_id}"
             found = True
@@ -188,19 +169,19 @@ def process_bulk_upload(bulk_file):
             st.session_state['not_found_df'] = pd.DataFrame({'Tracking ID': missing, 'Status': 'Not Found', 'Processed Time': current_time})
         
         st.session_state['bulk_status'] = 'success'
-        st.session_state['bulk_message'] = f"✅ Done! C: {newly_c}, R: {newly_r}, Missing: {len(missing)}"
+        st.session_state['bulk_message'] = f"✅ Bulk Done! Courier Return: {newly_c}, Reverse Pickup: {newly_r}, Missing: {len(missing)}"
     except Exception as e:
         st.error(f"Bulk Error: {e}")
 
-def display_aggrid(df, title):
+def display_data(df, title):
     st.subheader(title)
-    cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
-    disp = [c for c in cols if c in df.columns]
-    gb = GridOptionsBuilder.from_dataframe(df[disp])
-    gb.configure_pagination(paginationPageSize=10)
-    gb.configure_default_column(filterable=True, sortable=True)
-    # Fix: Removed the problematic ColumnsAutoSizeMode enum and used simple string/fit logic
-    AgGrid(df[disp], gridOptions=gb.build(), theme='streamlit', fit_columns_on_grid_load=True)
+    if df is not None and not df.empty:
+        cols = ['Sale Order No', 'Tracking ID', 'Item SkuCode', 'Item Name', 'Total Received Items', 'Received', 'Received Timestamp']
+        disp = [c for c in cols if c in df.columns]
+        # AgGrid preview issues fix: Using st.dataframe for reliable preview
+        st.dataframe(df[disp], use_container_width=True, hide_index=True)
+    else:
+        st.info(f"No data available for {title}")
 
 # -----------------------------------------------------------------------------
 # Sidebar
@@ -210,19 +191,26 @@ with st.sidebar:
     gsheet_url = st.text_input("Google Sheet Link", value="https://docs.google.com/spreadsheets/d/1rARUn084bsomOL_jPfjImpVzQJb-p-1B7l2xo-2Nchs/edit?usp=sharing")
 
     if st.button("🔄 Load Both Sheets", type="primary", use_container_width=True):
-        st.session_state['returns_df_courier'] = load_data_from_gsheet(gsheet_url, "Courier Return")
-        st.session_state['returns_df_reverse'] = load_data_from_gsheet(gsheet_url, "Reverse Pickup")
+        with st.spinner("Loading..."):
+            st.session_state['returns_df_courier'] = load_data_from_gsheet(gsheet_url, "Courier Return")
+            st.session_state['returns_df_reverse'] = load_data_from_gsheet(gsheet_url, "Reverse Pickup")
         st.success("Sheets Loaded!")
 
     if st.session_state['returns_df_courier'] is not None:
         st.divider()
         if st.button("🚀 Push All Changes", type="primary", use_container_width=True):
-            with st.spinner("Pushing..."):
-                sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
-                sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
-                if st.session_state['not_found_df'] is not None:
-                    sync_not_found_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
-                st.success("Synced to Cloud!")
+            with st.spinner("Pushing to Google Sheets..."):
+                c_ok, _ = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
+                r_ok, _ = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
+                n_ok = True
+                if st.session_state['not_found_df'] is not None and not st.session_state['not_found_df'].empty:
+                    from google.oauth2.service_account import Credentials # Re-verify
+                    n_ok, _ = sync_to_google_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
+                
+                if c_ok and r_ok:
+                    st.success("✅ Successfully Pushed to Google Sheets!")
+                else:
+                    st.error("❌ Some sheets failed to sync. Check logs.")
 
 # -----------------------------------------------------------------------------
 # Main UI
@@ -230,13 +218,13 @@ with st.sidebar:
 st.title("📦 Amazon Returns Scanner")
 
 if st.session_state['returns_df_courier'] is None:
-    st.info("Click **Load Both Sheets** in sidebar.")
+    st.info("Sidebar se **Load Both Sheets** par click karein.")
 else:
     tab1, tab2, tab3 = st.tabs(["🎯 Single Scan", "📁 Bulk Upload", "❌ Not Found"])
 
     with tab1:
         with st.form("scan_form", clear_on_submit=True):
-            tid = st.text_input("Scan AWB")
+            tid = st.text_input("Scan AWB / Tracking ID")
             if st.form_submit_button("Mark Received"):
                 if tid: process_scan(tid)
         
@@ -244,16 +232,23 @@ else:
             if st.session_state['scanned_status'] == 'success': st.success(st.session_state['scanned_message'])
             else: st.error(st.session_state['scanned_message'])
 
-        display_aggrid(st.session_state['returns_df_courier'], "Courier Returns")
-        display_aggrid(st.session_state['returns_df_reverse'], "Reverse Pickups")
+        display_data(st.session_state['returns_df_courier'], "Courier Returns")
+        display_data(st.session_state['returns_df_reverse'], "Reverse Pickups")
 
     with tab2:
-        st.download_button("⬇️ Template", data=pd.DataFrame(columns=['Tracking ID']).to_csv(index=False), file_name="template.csv")
-        bulk_file = st.file_uploader("Upload", type=['csv', 'xlsx'])
-        if st.button("🚀 Process Bulk"):
-            if bulk_file: process_bulk_upload(bulk_file)
-        if st.session_state['bulk_message']: st.success(st.session_state['bulk_message'])
+        st.markdown("### Bulk Process")
+        st.download_button("⬇️ Download Template", data=pd.DataFrame(columns=['Tracking ID']).to_csv(index=False), file_name="template.csv", key="main_tpl")
+        bulk_file = st.file_uploader("Upload File", type=['csv', 'xlsx'], key="main_up")
+        if st.button("🚀 Process Bulk", type="primary"):
+            if bulk_file: 
+                process_bulk_upload(bulk_file)
+                st.rerun()
+        
+        if st.session_state['bulk_message']: 
+            st.success(st.session_state['bulk_message'])
 
     with tab3:
         if st.session_state['not_found_df'] is not None:
-            st.dataframe(st.session_state['not_found_df'])
+            st.dataframe(st.session_state['not_found_df'], use_container_width=True, hide_index=True)
+        else:
+            st.info("Koi bhi 'Not Found' items nahi hain.")
