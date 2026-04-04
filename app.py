@@ -137,7 +137,7 @@ def process_scan(tracking_id):
                 st.session_state['scanned_status'], st.session_state['scanned_message'] = 'success', f"✅ Marked (Courier): {tracking_id}"
             found = True
 
-    # Search in Reverse if not found or even if found (to be safe)
+    # Search in Reverse if not found
     if not found and st.session_state['returns_df_reverse'] is not None:
         df = st.session_state['returns_df_reverse']
         mask = df['Tracking ID'].str.lower() == tracking_id.lower()
@@ -153,13 +153,13 @@ def process_scan(tracking_id):
             found = True
 
     if not found:
-        st.session_state['scanned_status'], st.session_state['scanned_message'] = 'error', f"❌ ID {tracking_id} Not Found in any list"
+        st.session_state['scanned_status'], st.session_state['scanned_message'] = 'error', f"❌ ID {tracking_id} Not Found"
 
 def process_bulk_upload(bulk_file):
     try:
         bulk_df = pd.read_csv(bulk_file) if bulk_file.name.endswith('.csv') else pd.read_excel(bulk_file)
         if 'Tracking ID' not in bulk_df.columns:
-            st.error("Column 'Tracking ID' missing in file")
+            st.error("Column 'Tracking ID' missing")
             return
         
         bulk_ids = set(bulk_df['Tracking ID'].astype(str).str.strip().str.lower())
@@ -188,8 +188,7 @@ def process_bulk_upload(bulk_file):
             st.session_state['not_found_df'] = pd.DataFrame({'Tracking ID': missing, 'Status': 'Not Found', 'Processed Time': current_time})
         
         st.session_state['bulk_status'] = 'success'
-        st.session_state['bulk_message'] = f"✅ Bulk Done! Courier: {newly_c}, Reverse: {newly_r}, Not Found: {len(missing)}"
-        st.session_state['missing_bulk_ids'] = missing
+        st.session_state['bulk_message'] = f"✅ Done! C: {newly_c}, R: {newly_r}, Missing: {len(missing)}"
     except Exception as e:
         st.error(f"Bulk Error: {e}")
 
@@ -200,7 +199,8 @@ def display_aggrid(df, title):
     gb = GridOptionsBuilder.from_dataframe(df[disp])
     gb.configure_pagination(paginationPageSize=10)
     gb.configure_default_column(filterable=True, sortable=True)
-    AgGrid(df[disp], gridOptions=gb.build(), theme='streamlit', columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS)
+    # Fix: Removed the problematic ColumnsAutoSizeMode enum and used simple string/fit logic
+    AgGrid(df[disp], gridOptions=gb.build(), theme='streamlit', fit_columns_on_grid_load=True)
 
 # -----------------------------------------------------------------------------
 # Sidebar
@@ -222,61 +222,38 @@ with st.sidebar:
                 sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
                 if st.session_state['not_found_df'] is not None:
                     sync_not_found_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
-                st.success("All Data Synced!")
+                st.success("Synced to Cloud!")
 
 # -----------------------------------------------------------------------------
 # Main UI
 # -----------------------------------------------------------------------------
 st.title("📦 Amazon Returns Scanner")
 
-df_c = st.session_state['returns_df_courier']
-df_r = st.session_state['returns_df_reverse']
-
-if df_c is None or df_r is None:
-    st.info("Please click **Load Both Sheets** from the sidebar to begin.")
+if st.session_state['returns_df_courier'] is None:
+    st.info("Click **Load Both Sheets** in sidebar.")
 else:
-    # Metrics
-    c1, c2, c3 = st.columns(3)
-    t = len(df_c) + len(df_r)
-    r = (df_c['Received'] == "Received").sum() + (df_r['Received'] == "Received").sum()
-    c1.metric("Total", t)
-    c2.metric("✅ Received", r)
-    c3.metric("⏳ Pending", t - r)
-
     tab1, tab2, tab3 = st.tabs(["🎯 Single Scan", "📁 Bulk Upload", "❌ Not Found"])
 
     with tab1:
         with st.form("scan_form", clear_on_submit=True):
-            tid = st.text_input("Scan AWB / Tracking ID")
+            tid = st.text_input("Scan AWB")
             if st.form_submit_button("Mark Received"):
-                if tid:
-                    process_scan(tid)
+                if tid: process_scan(tid)
         
         if st.session_state['scanned_message']:
             if st.session_state['scanned_status'] == 'success': st.success(st.session_state['scanned_message'])
-            elif st.session_state['scanned_status'] == 'warning': st.warning(st.session_state['scanned_message'])
             else: st.error(st.session_state['scanned_message'])
 
-        display_aggrid(df_c, "Courier Returns")
-        display_aggrid(df_r, "Reverse Pickups")
+        display_aggrid(st.session_state['returns_df_courier'], "Courier Returns")
+        display_aggrid(st.session_state['returns_df_reverse'], "Reverse Pickups")
 
     with tab2:
-        st.markdown("### Bulk Process")
-        # Template download with unique key to prevent reset
-        st.download_button("⬇️ Download Template", data=pd.DataFrame(columns=['Tracking ID']).to_csv(index=False), 
-                           file_name="template.csv", mime="text/csv", key="tpl_dl")
-        
-        bulk_file = st.file_uploader("Upload File", type=['csv', 'xlsx'], key="bulk_up")
-        if st.button("🚀 Process Bulk", type="primary"):
-            if bulk_file:
-                process_bulk_upload(bulk_file)
-                st.rerun()
-
-        if st.session_state['bulk_message']:
-            st.success(st.session_state['bulk_message'])
+        st.download_button("⬇️ Template", data=pd.DataFrame(columns=['Tracking ID']).to_csv(index=False), file_name="template.csv")
+        bulk_file = st.file_uploader("Upload", type=['csv', 'xlsx'])
+        if st.button("🚀 Process Bulk"):
+            if bulk_file: process_bulk_upload(bulk_file)
+        if st.session_state['bulk_message']: st.success(st.session_state['bulk_message'])
 
     with tab3:
         if st.session_state['not_found_df'] is not None:
-            st.dataframe(st.session_state['not_found_df'], use_container_width=True)
-        else:
-            st.info("No 'Not Found' items yet.")
+            st.dataframe(st.session_state['not_found_df'])
