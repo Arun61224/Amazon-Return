@@ -58,10 +58,6 @@ def load_data_from_gsheet(url, worksheet_name):
         if found and found != "Tracking ID":
             df = df.rename(columns={found: "Tracking ID"})
 
-        if 'Tracking ID' not in df.columns:
-            st.sidebar.error(f"Tracking ID not found in {worksheet_name}")
-            return None
-
         df['Tracking ID'] = df['Tracking ID'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         if 'Received' not in df.columns:
             df['Received'] = "Not Received"
@@ -142,6 +138,7 @@ def process_bulk_upload(bulk_file):
         current_time = get_current_ist_time()
         newly_c, newly_r = 0, 0
 
+        # Update Session State directly to avoid reset issues
         if st.session_state['returns_df_courier'] is not None:
             df = st.session_state['returns_df_courier'].copy()
             mask = df['Tracking ID'].str.lower().isin(bulk_ids) & (df['Received'] == "Not Received")
@@ -176,7 +173,6 @@ def display_aggrid(df, title):
         gb = GridOptionsBuilder.from_dataframe(df[disp_cols])
         gb.configure_pagination(paginationPageSize=15)
         gb.configure_default_column(filterable=True, sortable=True)
-        # Fix: Using string 'fit_contents' or AUTO_SIZE to prevent NameError
         AgGrid(df[disp_cols], gridOptions=gb.build(), theme='streamlit', columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS)
     else:
         st.info("No data to display")
@@ -194,16 +190,13 @@ with st.sidebar:
             st.session_state['returns_df_reverse'] = load_data_from_gsheet(gsheet_url, "Reverse Pickup")
         st.success("Sheets Loaded!")
 
-    if st.session_state['returns_df_courier'] is not None:
+    if st.session_state['returns_df_courier'] is not None or st.session_state['returns_df_reverse'] is not None:
         st.divider()
         if st.button("🚀 Push All Changes", type="primary", use_container_width=True):
             with st.spinner("Pushing..."):
-                c_ok, _ = sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
-                r_ok, _ = sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
+                sync_to_google_sheet(st.session_state['returns_df_courier'], gsheet_url, "Courier Return")
+                sync_to_google_sheet(st.session_state['returns_df_reverse'], gsheet_url, "Reverse Pickup")
                 if st.session_state['not_found_df'] is not None:
-                    # Naya logic: Purane Not Found data ko retain karna
-                    from google.oauth2.service_account import Credentials
-                    # Yaha sync_not_found ka simple version use kiya hai push ke liye
                     sync_to_google_sheet(st.session_state['not_found_df'], gsheet_url, "Not Found")
                 st.success("✅ Changes Pushed Successfully!")
 
@@ -212,19 +205,23 @@ with st.sidebar:
 # -----------------------------------------------------------------------------
 st.title("📦 Amazon Returns Scanner")
 
-df_c = st.session_state['returns_df_courier']
-df_r = st.session_state['returns_df_reverse']
+# Important: Use the session state variables to check if data exists
+df_c = st.session_state.get('returns_df_courier')
+df_r = st.session_state.get('returns_df_reverse')
 
-if df_c is None or df_r is None:
+if df_c is None and df_r is None:
     st.info("Click **Load Both Sheets** from sidebar")
 else:
-    # Top Stats
-    t = len(df_c) + len(df_r)
-    r = (df_c['Received'] == "Received").sum() + (df_r['Received'] == "Received").sum()
+    # Metrics
+    t = (len(df_c) if df_c is not None else 0) + (len(df_r) if df_r is not None else 0)
+    r_count = 0
+    if df_c is not None: r_count += (df_c['Received'] == "Received").sum()
+    if df_r is not None: r_count += (df_r['Received'] == "Received").sum()
+    
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Returns", t)
-    c2.metric("✅ Received", r)
-    c3.metric("⏳ Pending", t - r)
+    c2.metric("✅ Received", r_count)
+    c3.metric("⏳ Pending", t - r_count)
 
     tab1, tab2, tab3 = st.tabs(["🎯 Single Scan", "📁 Bulk Upload", "❌ Not Found"])
 
@@ -239,17 +236,23 @@ else:
             if st.session_state['scanned_status'] == 'success': st.success(st.session_state['scanned_message'])
             else: st.error(st.session_state['scanned_message'])
 
-        display_aggrid(st.session_state['returns_df_courier'], "Courier Return")
-        display_aggrid(st.session_state['returns_df_reverse'], "Reverse Pickup")
+        if df_c is not None: display_aggrid(df_c, "Courier Return")
+        if df_r is not None: display_aggrid(df_r, "Reverse Pickup")
 
     with tab2:
         st.markdown("### 📥 Bulk Upload")
+        # Template download with unique key
         st.download_button("⬇️ Download Template", data=pd.DataFrame(columns=['Tracking ID']).to_csv(index=False), file_name="template.csv", key="tpl_btn")
+        
         bulk_file = st.file_uploader("Upload File", type=['csv', 'xlsx'], key="blk_up")
+        
         if st.button("🚀 Process Bulk Upload", type="primary"):
             if bulk_file:
                 process_bulk_upload(bulk_file)
-                st.rerun()
+                # Avoid rerun, just let it update states
+            else:
+                st.warning("Please upload a file first.")
+
         if st.session_state['bulk_message']:
             st.success(st.session_state['bulk_message'])
 
@@ -258,4 +261,4 @@ else:
             st.subheader("❌ Not Found IDs")
             st.dataframe(st.session_state['not_found_df'], use_container_width=True)
         else:
-            st.info("No Not Found items.")
+            st.info("No Not Found items yet.")
